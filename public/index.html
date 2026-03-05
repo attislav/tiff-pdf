@@ -123,6 +123,21 @@
     }
     .status.error { color: #ef4444; }
     .status.success { color: #22c55e; }
+    .debug {
+      margin-top: 1rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
     .badge {
       display: inline-block;
       background: #1e3a5f;
@@ -155,6 +170,7 @@
       <div class="progress-bar" id="progressBar"></div>
     </div>
     <div class="status" id="status"></div>
+    <div class="debug" id="debug"></div>
   </div>
 
   <script>
@@ -165,7 +181,16 @@
     const progress = document.getElementById('progress');
     const progressBar = document.getElementById('progressBar');
     const statusEl = document.getElementById('status');
+    const debugEl = document.getElementById('debug');
     let files = [];
+
+    function log(msg) {
+      const ts = new Date().toLocaleTimeString();
+      debugEl.style.display = 'block';
+      debugEl.textContent += `[${ts}] ${msg}\n`;
+      debugEl.scrollTop = debugEl.scrollHeight;
+      console.log(`[TIFF-PDF] ${msg}`);
+    }
 
     dropzone.addEventListener('click', () => fileInput.click());
     dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -227,14 +252,23 @@
     async function convertFiles() {
       if (files.length === 0) return;
 
+      debugEl.textContent = '';
       convertBtn.disabled = true;
       progress.style.display = 'block';
       setProgress(0);
       setStatus('Dateien werden gelesen...');
 
+      log('Start - ' + files.length + ' Datei(en)');
+      files.forEach((f, i) => log(`  Datei ${i+1}: ${f.name} (${formatSize(f.size)})`));
+
+      log('Pruefe Libraries...');
+      log('  UTIF: ' + (typeof UTIF !== 'undefined' ? 'OK' : 'FEHLT'));
+      log('  PDFLib: ' + (typeof PDFLib !== 'undefined' ? 'OK' : 'FEHLT'));
+
       try {
         const { PDFDocument } = PDFLib;
         const pdfDoc = await PDFDocument.create();
+        log('PDF-Dokument erstellt');
 
         let totalPages = 0;
         let processedPages = 0;
@@ -243,12 +277,22 @@
         const fileBuffers = [];
         for (let fi = 0; fi < files.length; fi++) {
           setStatus(`Datei ${fi + 1}/${files.length} wird gelesen...`);
+          log(`Lese Datei ${fi+1}/${files.length}: ${files[fi].name}...`);
+          const t0 = performance.now();
           const buf = await files[fi].arrayBuffer();
+          log(`  ArrayBuffer gelesen: ${formatSize(buf.byteLength)} in ${((performance.now()-t0)/1000).toFixed(1)}s`);
+
+          log('  UTIF.decode starten...');
+          const t1 = performance.now();
           const ifds = UTIF.decode(buf);
+          log(`  UTIF.decode fertig: ${ifds.length} Seite(n) in ${((performance.now()-t1)/1000).toFixed(1)}s`);
+
           totalPages += ifds.length;
           fileBuffers.push({ buf, ifds });
           await yieldUI();
         }
+
+        log(`Gesamt: ${totalPages} Seite(n) aus ${files.length} Datei(en)`);
 
         // Use a canvas for rendering frames
         const canvas = document.createElement('canvas');
@@ -263,10 +307,14 @@
             setStatus(`Seite ${processedPages}/${totalPages} wird konvertiert...`);
             setProgress(Math.round((processedPages / totalPages) * 90));
 
+            log(`Seite ${processedPages}/${totalPages} (Datei ${fi+1}, Frame ${pi+1})...`);
+            const t2 = performance.now();
+
             UTIF.decodeImage(buf, ifds[pi]);
             const rgba = UTIF.toRGBA8(ifds[pi]);
             const w = ifds[pi].width;
             const h = ifds[pi].height;
+            log(`  Decoded: ${w}x${h} (${formatSize(rgba.length)} RGBA) in ${((performance.now()-t2)/1000).toFixed(1)}s`);
 
             canvas.width = w;
             canvas.height = h;
@@ -274,12 +322,19 @@
             ctx.putImageData(imageData, 0, 0);
 
             // Convert to JPEG for smaller PDF size (quality 0.85)
-            const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
-            const jpgBytes = new Uint8Array(await blob.arrayBuffer());
+            const t3 = performance.now();
+            const jpgBlob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+            if (!jpgBlob) {
+              log('  FEHLER: canvas.toBlob lieferte null!');
+              throw new Error(`canvas.toBlob fehlgeschlagen bei Seite ${processedPages}`);
+            }
+            const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
+            log(`  JPEG: ${formatSize(jpgBytes.length)} in ${((performance.now()-t3)/1000).toFixed(1)}s`);
 
             const jpgImage = await pdfDoc.embedJpg(jpgBytes);
             const page = pdfDoc.addPage([w, h]);
             page.drawImage(jpgImage, { x: 0, y: 0, width: w, height: h });
+            log(`  PDF-Seite hinzugefuegt`);
 
             await yieldUI();
           }
@@ -289,7 +344,10 @@
         setProgress(95);
         await yieldUI();
 
+        log('PDF speichern...');
+        const t4 = performance.now();
         const pdfBytes = await pdfDoc.save();
+        log(`PDF fertig: ${formatSize(pdfBytes.length)} in ${((performance.now()-t4)/1000).toFixed(1)}s`);
 
         setProgress(100);
 
@@ -303,6 +361,7 @@
         URL.revokeObjectURL(url);
 
         setStatus('PDF erfolgreich erstellt!', 'success');
+        log('Download gestartet - fertig!');
 
         // Track stats (fire and forget)
         try {
@@ -315,6 +374,8 @@
 
       } catch (err) {
         console.error(err);
+        log(`FEHLER: ${err.message}`);
+        log(`Stack: ${err.stack}`);
         setStatus('Fehler: ' + err.message, 'error');
       } finally {
         convertBtn.disabled = false;
