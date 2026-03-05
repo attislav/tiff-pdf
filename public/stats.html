@@ -14,7 +14,8 @@
       padding: 2rem;
     }
     .container { max-width: 720px; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f8fafc; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; color: #f8fafc; }
+    .hint { color: #64748b; font-size: 0.8rem; margin-bottom: 1.5rem; }
     .cards {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -83,62 +84,77 @@
       color: #94a3b8;
       margin-bottom: 2px;
     }
-    .loading { text-align: center; color: #64748b; padding: 3rem 0; }
-    .error { text-align: center; color: #ef4444; padding: 3rem 0; }
+    .empty { text-align: center; color: #64748b; padding: 3rem 0; }
+    .back {
+      display: inline-block;
+      margin-top: 1.5rem;
+      color: #3b82f6;
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    .back:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>JENS TIFF zu PDF - Stats</h1>
-    <div id="content"><div class="loading">Lade Statistiken...</div></div>
+    <p class="hint">Statistiken werden lokal in deinem Browser gespeichert.</p>
+    <div id="content"></div>
+    <a class="back" href="/">&larr; Zurueck zum Konverter</a>
   </div>
   <script>
-    async function load() {
-      const content = document.getElementById('content');
-      try {
-        const res = await fetch('/api/stats');
-        if (!res.ok) throw new Error('Fehler beim Laden');
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
+    const stats = JSON.parse(localStorage.getItem('tiff-pdf-stats') || '{}');
+    const content = document.getElementById('content');
 
-        const days = Object.entries(data.daily)
-          .sort(([a], [b]) => a.localeCompare(b));
-        const max = Math.max(1, ...days.map(([, v]) => v));
+    const totalConv = stats.total_conversions || 0;
+    const totalFiles = stats.total_files || 0;
+    const totalPages = stats.total_pages || 0;
+    const daily = stats.daily || {};
 
-        content.innerHTML = `
-          <div class="cards">
-            <div class="card">
-              <div class="value">${data.total_conversions}</div>
-              <div class="label">Konvertierungen</div>
-            </div>
-            <div class="card">
-              <div class="value">${data.total_files}</div>
-              <div class="label">Dateien</div>
-            </div>
-            <div class="card">
-              <div class="value">${data.total_pages}</div>
-              <div class="label">Seiten</div>
-            </div>
-          </div>
-          <div class="chart-container">
-            <div class="chart-title">Konvertierungen pro Tag (letzte 30 Tage)</div>
-            <div class="chart">
-              ${days.map(([day, count]) => {
-                const h = Math.max(2, (count / max) * 140);
-                const label = day.slice(5);
-                return `<div class="bar-wrapper">
-                  <span class="bar-count">${count || ''}</span>
-                  <div class="bar" style="height:${h}px"></div>
-                  <span class="bar-label">${label}</span>
-                </div>`;
-              }).join('')}
-            </div>
-          </div>`;
-      } catch (e) {
-        content.innerHTML = `<div class="error">${e.message}</div>`;
+    if (totalConv === 0) {
+      content.innerHTML = '<div class="empty">Noch keine Konvertierungen durchgefuehrt.</div>';
+    } else {
+      // Build last 30 days
+      const days = [];
+      const now = new Date();
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const key = d.toISOString().slice(0, 10);
+        days.push([key, daily[key] || 0]);
       }
+      const max = Math.max(1, ...days.map(([, v]) => v));
+
+      content.innerHTML = `
+        <div class="cards">
+          <div class="card">
+            <div class="value">${totalConv}</div>
+            <div class="label">Konvertierungen</div>
+          </div>
+          <div class="card">
+            <div class="value">${totalFiles}</div>
+            <div class="label">Dateien</div>
+          </div>
+          <div class="card">
+            <div class="value">${totalPages}</div>
+            <div class="label">Seiten</div>
+          </div>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Konvertierungen pro Tag (letzte 30 Tage)</div>
+          <div class="chart">
+            ${days.map(([day, count]) => {
+              const h = Math.max(2, (count / max) * 140);
+              const label = day.slice(5);
+              return `<div class="bar-wrapper">
+                <span class="bar-count">${count || ''}</span>
+                <div class="bar" style="height:${h}px"></div>
+                <span class="bar-label">${label}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
     }
-    load();
   </script>
 </body>
 </html>

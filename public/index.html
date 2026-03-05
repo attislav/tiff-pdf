@@ -509,13 +509,16 @@
 
         showPdfInfo(pdfBytes.length, pageInfos);
 
-        // Track stats (fire and forget)
+        // Track stats in localStorage
         try {
-          fetch('/api/stats', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ files: files.length, pages: totalPages })
-          }).catch(() => {});
+          const stats = JSON.parse(localStorage.getItem('tiff-pdf-stats') || '{}');
+          stats.total_conversions = (stats.total_conversions || 0) + 1;
+          stats.total_files = (stats.total_files || 0) + files.length;
+          stats.total_pages = (stats.total_pages || 0) + totalPages;
+          const today = new Date().toISOString().slice(0, 10);
+          if (!stats.daily) stats.daily = {};
+          stats.daily[today] = (stats.daily[today] || 0) + 1;
+          localStorage.setItem('tiff-pdf-stats', JSON.stringify(stats));
         } catch {}
 
       } catch (err) {
