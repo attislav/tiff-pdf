@@ -123,6 +123,64 @@
     }
     .status.error { color: #ef4444; }
     .status.success { color: #22c55e; }
+    .pdf-info {
+      margin-top: 1.25rem;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      display: none;
+    }
+    .pdf-info h3 {
+      font-size: 0.85rem;
+      color: #f8fafc;
+      margin-bottom: 0.75rem;
+      font-weight: 600;
+    }
+    .pdf-info table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .pdf-info td {
+      padding: 0.3rem 0;
+      vertical-align: top;
+    }
+    .pdf-info td:first-child {
+      color: #64748b;
+      width: 45%;
+    }
+    .pdf-info td:last-child {
+      color: #e2e8f0;
+      font-weight: 500;
+    }
+    .pdf-info .separator {
+      border-top: 1px solid #334155;
+      margin: 0.5rem 0;
+    }
+    .pdf-info .page-detail {
+      background: #0f172a;
+      border-radius: 6px;
+      padding: 0.6rem 0.8rem;
+      margin-top: 0.5rem;
+      font-size: 0.78rem;
+    }
+    .pdf-info .page-detail summary {
+      cursor: pointer;
+      color: #94a3b8;
+      font-size: 0.8rem;
+    }
+    .pdf-info .page-detail summary:hover {
+      color: #e2e8f0;
+    }
+    .pdf-info .warn {
+      color: #fbbf24;
+      font-size: 0.78rem;
+      margin-top: 0.5rem;
+      padding: 0.4rem 0.6rem;
+      background: rgba(251,191,36,0.08);
+      border-radius: 6px;
+    }
     .debug {
       margin-top: 1rem;
       background: #1e293b;
@@ -170,6 +228,7 @@
       <div class="progress-bar" id="progressBar"></div>
     </div>
     <div class="status" id="status"></div>
+    <div class="pdf-info" id="pdfInfo"></div>
     <div class="debug" id="debug"></div>
   </div>
 
@@ -182,6 +241,7 @@
     const progressBar = document.getElementById('progressBar');
     const statusEl = document.getElementById('status');
     const debugEl = document.getElementById('debug');
+    const pdfInfoEl = document.getElementById('pdfInfo');
     let files = [];
 
     function log(msg) {
@@ -249,10 +309,92 @@
       return new Promise(r => setTimeout(r, 0));
     }
 
+    function detectPaper(mmW, mmH) {
+      const sizes = [
+        [841, 1189, 'A0'], [594, 841, 'A1'], [420, 594, 'A2'],
+        [297, 420, 'A3'], [210, 297, 'A4'], [148, 210, 'A5'],
+        [105, 148, 'A6'], [216, 279, 'Letter'], [216, 356, 'Legal'],
+      ];
+      for (const [w, h, name] of sizes) {
+        if ((Math.abs(mmW - w) < 5 && Math.abs(mmH - h) < 5))
+          return name;
+        if ((Math.abs(mmW - h) < 5 && Math.abs(mmH - w) < 5))
+          return name + ' quer';
+      }
+      return null;
+    }
+
+    function showPdfInfo(pdfSize, pageInfos) {
+      const totalPages = pageInfos.length;
+      // Group pages by dimensions
+      const groups = {};
+      pageInfos.forEach((p, i) => {
+        const key = `${p.width}x${p.height}`;
+        if (!groups[key]) groups[key] = { ...p, pages: [] };
+        groups[key].pages.push(i + 1);
+      });
+
+      let html = `<h3>PDF-Informationen</h3>`;
+      html += `<table>`;
+      html += `<tr><td>Dateigroesse</td><td>${formatSize(pdfSize)}</td></tr>`;
+      html += `<tr><td>Seiten</td><td>${totalPages}</td></tr>`;
+      html += `</table>`;
+
+      for (const key of Object.keys(groups)) {
+        const g = groups[key];
+        const mmW = (g.width * 0.3528).toFixed(1);
+        const mmH = (g.height * 0.3528).toFixed(1);
+        const inW = (g.width / 72).toFixed(2);
+        const inH = (g.height / 72).toFixed(2);
+        const paper = detectPaper(parseFloat(mmW), parseFloat(mmH));
+
+        html += `<div class="separator"></div>`;
+        if (Object.keys(groups).length > 1) {
+          html += `<div style="color:#94a3b8;font-size:0.78rem;margin-bottom:0.3rem;">Seite ${g.pages[0]}${g.pages.length > 1 ? '-' + g.pages[g.pages.length-1] : ''} (${g.pages.length}x)</div>`;
+        }
+        html += `<table>`;
+        html += `<tr><td>Pixel</td><td>${g.width} x ${g.height} px</td></tr>`;
+        html += `<tr><td>Abmessungen</td><td>${mmW} x ${mmH} mm</td></tr>`;
+        html += `<tr><td></td><td>${inW} x ${inH} inch</td></tr>`;
+        if (paper) {
+          html += `<tr><td>Papierformat</td><td>${paper}</td></tr>`;
+        }
+
+        // DPI estimates for common print sizes
+        const a4dpiW = (g.width / (210/25.4)).toFixed(0);
+        const a4dpiH = (g.height / (297/25.4)).toFixed(0);
+        const a3dpiW = (g.width / (297/25.4)).toFixed(0);
+        const a3dpiH = (g.height / (420/25.4)).toFixed(0);
+        html += `<tr><td>DPI bei A4-Druck</td><td>${a4dpiW} x ${a4dpiH}</td></tr>`;
+        html += `<tr><td>DPI bei A3-Druck</td><td>${a3dpiW} x ${a3dpiH}</td></tr>`;
+        html += `</table>`;
+
+        // Warnings
+        const ptW = g.width * 0.3528;
+        const ptH = g.height * 0.3528;
+        if (ptW > 1200 || ptH > 1200) {
+          html += `<div class="warn">Hinweis: Seitengroesse ist ${mmW} x ${mmH} mm (${(ptW/1000).toFixed(1)} x ${(ptH/1000).toFixed(1)} m). Die Pixelmasse wurden 1:1 als PDF-Punkte uebernommen. Fuer den Druck auf Standardpapier sollte die Seitengroesse skaliert werden.</div>`;
+        }
+      }
+
+      // Page details expandable
+      if (totalPages > 1) {
+        html += `<details class="page-detail"><summary>${totalPages} Seiten im Detail</summary><table style="margin-top:0.4rem">`;
+        pageInfos.forEach((p, i) => {
+          html += `<tr><td>Seite ${i+1}</td><td>${p.width}x${p.height} px, JPEG ${formatSize(p.jpgSize)}</td></tr>`;
+        });
+        html += `</table></details>`;
+      }
+
+      pdfInfoEl.innerHTML = html;
+      pdfInfoEl.style.display = 'block';
+    }
+
     async function convertFiles() {
       if (files.length === 0) return;
 
       debugEl.textContent = '';
+      pdfInfoEl.style.display = 'none';
       convertBtn.disabled = true;
       progress.style.display = 'block';
       setProgress(0);
@@ -272,6 +414,7 @@
 
         let totalPages = 0;
         let processedPages = 0;
+        const pageInfos = [];
 
         // First pass: count total pages for progress
         const fileBuffers = [];
@@ -334,6 +477,7 @@
             const jpgImage = await pdfDoc.embedJpg(jpgBytes);
             const page = pdfDoc.addPage([w, h]);
             page.drawImage(jpgImage, { x: 0, y: 0, width: w, height: h });
+            pageInfos.push({ width: w, height: h, jpgSize: jpgBytes.length });
             log(`  PDF-Seite hinzugefuegt`);
 
             await yieldUI();
@@ -362,6 +506,8 @@
 
         setStatus('PDF erfolgreich erstellt!', 'success');
         log('Download gestartet - fertig!');
+
+        showPdfInfo(pdfBytes.length, pageInfos);
 
         // Track stats (fire and forget)
         try {
