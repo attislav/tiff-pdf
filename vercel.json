@@ -1,0 +1,11 @@
+{
+  "builds": [
+    {
+      "src": "api/convert.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
