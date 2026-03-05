@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JENS - TIFF zu PDF Konverter</title>
+  <script src="https://unpkg.com/utif@3.1.0/UTIF.js"></script>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -121,17 +123,27 @@
     }
     .status.error { color: #ef4444; }
     .status.success { color: #22c55e; }
+    .badge {
+      display: inline-block;
+      background: #1e3a5f;
+      color: #60a5fa;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      margin-left: 0.5rem;
+      vertical-align: middle;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>JENS TIFF zu PDF</h1>
-    <p class="subtitle">TIFF-Dateien hochladen und als PDF herunterladen. Mehrseitige TIFFs werden unterstuetzt.</p>
+    <h1>JENS TIFF zu PDF <span class="badge">lokal</span></h1>
+    <p class="subtitle">TIFF-Dateien werden direkt im Browser konvertiert. Keine Dateien werden hochgeladen. Kein Groessenlimit.</p>
 
     <div class="dropzone" id="dropzone">
       <div class="dropzone-icon">&#128196;</div>
       <p class="dropzone-text"><strong>Klicken</strong> oder Dateien hierher ziehen</p>
-      <p class="dropzone-text" style="font-size:0.8rem; margin-top:0.5rem">.tiff / .tif &mdash; max 50 MB</p>
+      <p class="dropzone-text" style="font-size:0.8rem; margin-top:0.5rem">.tiff / .tif &mdash; keine Groessenbeschraenkung</p>
     </div>
     <input type="file" id="fileInput" accept=".tiff,.tif,image/tiff" multiple>
 
@@ -152,7 +164,7 @@
     const convertBtn = document.getElementById('convertBtn');
     const progress = document.getElementById('progress');
     const progressBar = document.getElementById('progressBar');
-    const status = document.getElementById('status');
+    const statusEl = document.getElementById('status');
     let files = [];
 
     dropzone.addEventListener('click', () => fileInput.click());
@@ -172,18 +184,23 @@
       renderFiles();
     }
 
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
     function renderFiles() {
       fileList.innerHTML = '';
       files.forEach((f, i) => {
         const div = document.createElement('div');
         div.className = 'file-item';
-        const sizeKB = (f.size / 1024).toFixed(1);
-        div.innerHTML = `<span class="name">${f.name}</span><span class="size">${sizeKB} KB</span><button class="remove" data-i="${i}">&times;</button>`;
+        div.innerHTML = `<span class="name">${f.name}</span><span class="size">${formatSize(f.size)}</span><button class="remove" data-i="${i}">&times;</button>`;
         fileList.appendChild(div);
       });
       convertBtn.disabled = files.length === 0;
-      status.textContent = '';
-      status.className = 'status';
+      statusEl.textContent = '';
+      statusEl.className = 'status';
     }
 
     fileList.addEventListener('click', e => {
@@ -193,60 +210,119 @@
       }
     });
 
-    convertBtn.addEventListener('click', async () => {
+    function setStatus(text, type) {
+      statusEl.textContent = text;
+      statusEl.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function setProgress(pct) {
+      progressBar.style.width = pct + '%';
+    }
+
+    // Yield to the browser so the UI updates
+    function yieldUI() {
+      return new Promise(r => setTimeout(r, 0));
+    }
+
+    async function convertFiles() {
       if (files.length === 0) return;
-      const formData = new FormData();
-      files.forEach(f => formData.append('files', f));
 
       convertBtn.disabled = true;
       progress.style.display = 'block';
-      progressBar.style.width = '0%';
-      status.textContent = 'Konvertiere...';
-      status.className = 'status';
+      setProgress(0);
+      setStatus('Dateien werden gelesen...');
 
       try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/convert');
-        xhr.responseType = 'blob';
+        const { PDFDocument } = PDFLib;
+        const pdfDoc = await PDFDocument.create();
 
-        xhr.upload.addEventListener('progress', e => {
-          if (e.lengthComputable) {
-            progressBar.style.width = Math.round((e.loaded / e.total) * 90) + '%';
-          }
-        });
+        let totalPages = 0;
+        let processedPages = 0;
 
-        const response = await new Promise((resolve, reject) => {
-          xhr.onload = () => resolve(xhr);
-          xhr.onerror = () => reject(new Error('Netzwerkfehler'));
-          xhr.send(formData);
-        });
-
-        progressBar.style.width = '100%';
-
-        if (response.status !== 200) {
-          const text = await response.response.text();
-          let msg = 'Konvertierung fehlgeschlagen';
-          try { msg = JSON.parse(text).error; } catch {}
-          throw new Error(msg);
+        // First pass: count total pages for progress
+        const fileBuffers = [];
+        for (let fi = 0; fi < files.length; fi++) {
+          setStatus(`Datei ${fi + 1}/${files.length} wird gelesen...`);
+          const buf = await files[fi].arrayBuffer();
+          const ifds = UTIF.decode(buf);
+          totalPages += ifds.length;
+          fileBuffers.push({ buf, ifds });
+          await yieldUI();
         }
 
-        const url = URL.createObjectURL(response.response);
+        // Use a canvas for rendering frames
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Second pass: decode and add to PDF
+        for (let fi = 0; fi < fileBuffers.length; fi++) {
+          const { buf, ifds } = fileBuffers[fi];
+
+          for (let pi = 0; pi < ifds.length; pi++) {
+            processedPages++;
+            setStatus(`Seite ${processedPages}/${totalPages} wird konvertiert...`);
+            setProgress(Math.round((processedPages / totalPages) * 90));
+
+            UTIF.decodeImage(buf, ifds[pi]);
+            const rgba = UTIF.toRGBA8(ifds[pi]);
+            const w = ifds[pi].width;
+            const h = ifds[pi].height;
+
+            canvas.width = w;
+            canvas.height = h;
+            const imageData = new ImageData(new Uint8ClampedArray(rgba), w, h);
+            ctx.putImageData(imageData, 0, 0);
+
+            // Convert to JPEG for smaller PDF size (quality 0.85)
+            const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+            const jpgBytes = new Uint8Array(await blob.arrayBuffer());
+
+            const jpgImage = await pdfDoc.embedJpg(jpgBytes);
+            const page = pdfDoc.addPage([w, h]);
+            page.drawImage(jpgImage, { x: 0, y: 0, width: w, height: h });
+
+            await yieldUI();
+          }
+        }
+
+        setStatus('PDF wird erstellt...');
+        setProgress(95);
+        await yieldUI();
+
+        const pdfBytes = await pdfDoc.save();
+
+        setProgress(100);
+
+        // Download
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = 'converted.pdf';
         a.click();
         URL.revokeObjectURL(url);
 
-        status.textContent = 'PDF erfolgreich erstellt!';
-        status.className = 'status success';
+        setStatus('PDF erfolgreich erstellt!', 'success');
+
+        // Track stats (fire and forget)
+        try {
+          fetch('/api/stats', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: files.length, pages: totalPages })
+          }).catch(() => {});
+        } catch {}
+
       } catch (err) {
-        status.textContent = err.message;
-        status.className = 'status error';
+        console.error(err);
+        setStatus('Fehler: ' + err.message, 'error');
       } finally {
         convertBtn.disabled = false;
         setTimeout(() => { progress.style.display = 'none'; }, 2000);
       }
-    });
+    }
+
+    convertBtn.addEventListener('click', convertFiles);
   </script>
 </body>
 </html>

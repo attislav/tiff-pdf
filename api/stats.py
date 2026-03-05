@@ -5,6 +5,34 @@ from datetime import datetime, timezone, timedelta
 
 
 class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        """Track a conversion from the client-side converter."""
+        url = os.environ.get("UPSTASH_REDIS_REST_URL")
+        token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+        if not url or not token:
+            self._json(200, {"ok": True})
+            return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            file_count = int(body.get("files", 0))
+            page_count = int(body.get("pages", 0))
+
+            from upstash_redis import Redis
+            redis = Redis(url=url, token=token)
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            pipe = redis.pipeline()
+            pipe.incr("stats:total_conversions")
+            pipe.incrby("stats:total_files", file_count)
+            pipe.incrby("stats:total_pages", page_count)
+            pipe.incr(f"stats:daily:{today}")
+            pipe.execute()
+        except Exception:
+            pass
+
+        self._json(200, {"ok": True})
+
     def do_GET(self):
         url = os.environ.get("UPSTASH_REDIS_REST_URL")
         token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
