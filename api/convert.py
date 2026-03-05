@@ -1,7 +1,28 @@
 from http.server import BaseHTTPRequestHandler
 import io
 import json
+import os
+from datetime import datetime, timezone
 from PIL import Image
+
+def _track_conversion(file_count, page_count):
+    """Track conversion stats in Upstash Redis (fire and forget)."""
+    try:
+        url = os.environ.get("UPSTASH_REDIS_REST_URL")
+        token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+        if not url or not token:
+            return
+        from upstash_redis import Redis
+        redis = Redis(url=url, token=token)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        pipe = redis.pipeline()
+        pipe.incr("stats:total_conversions")
+        pipe.incrby("stats:total_files", file_count)
+        pipe.incrby("stats:total_pages", page_count)
+        pipe.incr(f"stats:daily:{today}")
+        pipe.execute()
+    except Exception:
+        pass
 
 
 class handler(BaseHTTPRequestHandler):
@@ -68,6 +89,8 @@ class handler(BaseHTTPRequestHandler):
                 )
 
             pdf_bytes = pdf_buffer.getvalue()
+
+            _track_conversion(len(files), len(pages))
 
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
